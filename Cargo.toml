@@ -1,0 +1,10 @@
+[package]
+name = "rhl_frontend"
+version = "0.0.1"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+rhl_parser = { path = "src/rhl_parser"}
