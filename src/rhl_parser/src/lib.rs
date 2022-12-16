@@ -1,7 +1,9 @@
 mod stdlib;
 
 pub mod preprocessing {
-    use std::{io::{Error, ErrorKind}, collections::HashMap};
+    use std::{io::{Error, ErrorKind}, collections::HashMap, fs};
+
+    use crate::stdlib;
 
     /// # Definition
     /// An RHL definiton is an optional string, since it can either be a code snippet or just an empty value.
@@ -58,7 +60,6 @@ pub mod preprocessing {
         }
 
         pub fn run<'a>(&'a mut self) -> Result<&'a str, Error> {
-
             while self.index < self.lines.len() {
                 let mut line = self.lines[self.index].to_owned();
 
@@ -81,7 +82,7 @@ pub mod preprocessing {
                     None => return Err(
                         Error::new(
                             ErrorKind::InvalidData, 
-                            format!("Failed to get first word of preprocessor directive '{line}'")
+                            format!("Failed to get first word of preprocessor directive '{line}' at line {}", self.index)
                         )
                     )
                 };
@@ -90,7 +91,7 @@ pub mod preprocessing {
                     "#define" => {
                         let ident = match words.next() {
                             Some(val) => val.to_owned(),
-                            None => return Err(Error::new(ErrorKind::InvalidData, format!("Failed to get <IDENT> in preprocessor directive '{line}'")))
+                            None => return Err(Error::new(ErrorKind::InvalidData, format!("Failed to get <IDENT> in preprocessor directive '{line}' at line {}.", self.index)))
                         };
 
                         let expr = match words.next() {
@@ -103,26 +104,108 @@ pub mod preprocessing {
                     "#undefine" => {
                         let ident = match words.next() {
                             Some(v) => v,
-                            None => return Err(Error::new(ErrorKind::InvalidData, format!("Error in preprocessor directive `#undefine <ident>` - No value for IDENT")))
+                            None => return Err(Error::new(ErrorKind::InvalidData, format!("Error in preprocessor directive `#undefine <ident>` - failed to get identifier at line {}.", self.index)))
                         };
 
                         self.defs.remove(ident);
                     },
-                    "#ifdef" => todo!("Implement #ifdef"),
-                    "#ifundef" => todo!("Implement #ifundef"),
-                    "#else" => todo!("Read until properly stacked #endif directive in #else"),
-                    "#endif" => {
-                        // This is intentionally empty. If we encounter a `#endif` directive, it should be ignored.
-                        // All #endif directives are handled in their own functions, so there's no point in handling one.
+                    "#ifdef" => {
+                        let ident = match words.next() {
+                            Some(val) => val,
+                            None => return Err(Error::new(ErrorKind::InvalidData, format!("Invalid preprocessor directive `{line}` - expected IDENT, got EOL.")))
+                        };
+
+                        let defined = self.defs.contains_key(ident);
+
+                        self.index += 1;
+
+                        if defined {
+                            self.read_until_endif_or_else()?;
+                        }
                     },
-                    "#with" => todo!("Implement #with directive."),
-                    _ => return Err(Error::new(ErrorKind::InvalidData, format!("Invalid preprocessor directive `{first_word}`")))
+                    "#ifundef" => {
+                        let ident = match words.next() {
+                            Some(val) => val,
+                            None => return Err(Error::new(ErrorKind::InvalidData, format!("Invalid preprocessor directive `{line}` - expected IDENT, got EOL.")))
+                        };
+
+                        let defined = self.defs.contains_key(ident);
+
+                        self.index += 1;
+
+                        if !defined {
+                            self.read_until_endif_or_else()?;
+                        }
+                    },
+                    "#else" => self.read_until_endif_or_else()?,
+                    "#endif" => {
+                        return Err(Error::new(ErrorKind::InvalidData, format!("Unexpected #endif directive at line {}.", self.index)));
+                    },
+                    "#with" => {
+                        let second_word = match words.next() {
+                            Some(val) => val,
+                            None => return Err(Error::new(ErrorKind::InvalidData, format!("Expected file path or library name after #with directive at line {}", self.index)))
+                        };
+
+                        let src : String = if second_word.starts_with("$") {
+                            match stdlib::BUILTIN_LIBS.get(second_word) {
+                                Some(src) => src.to_owned(),
+                                None => return Err(Error::new(ErrorKind::InvalidData, format!("No stdlib module with identifier {second_word} at line {}.", self.index)))
+                            }
+                        } else {
+                            // We've already parsed the directive before now, we'll be fine.
+                            let path = line.split_once(" ").unwrap();
+                            fs::read_to_string(path.1)?
+                        };
+
+                        let mut p = Preprocessor::new(&src);
+                        self.out.push_str(&p.run()?);
+                    },
+                    _ => return Err(Error::new(ErrorKind::InvalidData, format!("Invalid preprocessor directive `{first_word}` at line {}.", self.index)))
                 }
 
                 self.index += 1;
             }
 
             Ok(&self.out)
+        }
+
+        fn read_until_endif_or_else(&mut self) -> Result<(), Error> {
+            let mut height: u16 = 0; 
+
+            while self.index < self.lines.len() {
+                if !self.lines[self.index].starts_with("#") {
+                    continue;
+                }
+
+                let directive : &str = match self.lines[self.index].split_once(" ") {
+                    Some(x) => x.0,
+                    None => self.lines[self.index]
+                };
+
+                match directive {
+                    "#ifdef" => height += 1,
+                    "#ifundef" => height += 1,
+                    "#endif" => {
+                        height -= 1;
+                        if height <= 0 {
+                            self.index += 1;
+                            return Ok(());
+                        }
+                    },
+                    "#else" => {
+                        if height - 1 <= 0 {
+                            self.index += 1;
+                            return Ok(());
+                        }
+                    }
+                    _ => continue
+                }
+
+                self.index += 1;
+            }
+
+            Err(Error::new(ErrorKind::UnexpectedEof, "Expected preprocessor directive `#endif` or `#else`, got EOF."))
         }
     }
 }
